@@ -1,0 +1,1808 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>[hidden]{display:none!important}</style>
+<title>Infinite Dot Grid</title>
+<style>
+  /* Layout: full-bleed canvas grid, a transformed world layer for boxes, floating menu and readout. */
+  :root {
+    --bg: #e7e8ea;
+    --dot: #8b909a;
+    --box-bg: #f1f2f3;
+    --box-line: #d3d5d9;
+    --box-shadow: rgba(30, 34, 42, 0.12);
+    --hud-bg: #f7f7f8;
+    --hud-fg: #2a2d33;
+    --hud-muted: #6b7078;
+    --hud-line: #d3d5d9;
+    --hover: #e7e8ea;
+    --danger: #b3261e;
+    --pin: #ffffff;    --font: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14161a;
+      --dot: #5d636d;
+      --box-bg: #1f2227;
+      --box-line: #30343b;
+      --box-shadow: rgba(0, 0, 0, 0.4);
+      --hud-bg: #1d2025;
+      --hud-fg: #e6e8ec;
+      --hud-muted: #9097a1;
+      --hud-line: #2c3037;
+      --hover: #2a2e35;
+      --danger: #ff8a80;
+      --pin: #000000;      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14161a;
+    --dot: #5d636d;
+    --box-bg: #1f2227;
+    --box-line: #30343b;
+    --box-shadow: rgba(0, 0, 0, 0.4);
+    --hud-bg: #1d2025;
+    --hud-fg: #e6e8ec;
+    --hud-muted: #9097a1;
+    --hud-line: #2c3037;
+    --hover: #2a2e35;
+      --danger: #ff8a80;
+      --pin: #000000;    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--hud-fg);
+    font-family: var(--font);
+    overflow: hidden;
+  }
+  #grid {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    touch-action: none;
+    cursor: grab;
+  }
+  #grid.dragging { cursor: grabbing; }
+
+  /* World layer: boxes live in world coordinates and move with pan and zoom. */
+  #world {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 0;
+    height: 0;
+    transform-origin: 0 0;
+    pointer-events: none;
+  }
+  .box {
+    position: absolute;
+    width: 240px;
+    min-height: 130px;
+    box-sizing: border-box;
+    padding: 16px;
+    background: var(--box-bg);
+    border: 1px solid var(--box-line);
+    border-radius: 18px;
+    box-shadow: 0 2px 10px var(--box-shadow);
+    pointer-events: auto;
+    cursor: grab;
+    touch-action: none;
+  }
+  .box.moving { cursor: grabbing; }
+  .box.selected { outline: 2px solid var(--hud-fg); outline-offset: 5px; }
+  .marquee {
+    position: fixed;
+    z-index: 15;
+    box-sizing: border-box;
+    border: 1.5px dashed var(--hud-muted);
+    border-radius: 4px;
+    background: var(--hover);
+    opacity: 0.7;
+    pointer-events: none;
+  }
+  /* One big dot centered on the left or right edge of the box (data-side).
+     It takes the color of the current mode: light dot in light mode, dark dot in dark mode. */
+  .box-dot {
+    position: absolute;
+    left: -13px;
+    top: 50%;
+    width: 26px;
+    height: 26px;
+    box-sizing: border-box;
+    margin: -13px 0 0;
+    padding: 0;
+    border-radius: 50%;
+    background: var(--pin);
+    border: 2px solid var(--hud-muted);
+    box-shadow: 0 0 0 3px var(--box-bg);
+    cursor: pointer;
+  }
+  .box-dot:not(:disabled):hover { border-color: var(--hud-fg); }
+  .box-dot:disabled { cursor: default; }
+  .box-dot:focus-visible { outline: 2px solid var(--hud-fg); outline-offset: 4px; }
+  .box-dot[data-side="right"] { left: auto; right: -13px; }
+
+  /* Curved connector lines between boxes, drawn in world coordinates under the boxes. */
+  .links {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 1px;
+    height: 1px;
+    overflow: visible;
+    pointer-events: none;
+  }
+  .link {
+    fill: none;
+    stroke: var(--hud-muted);
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    vector-effect: non-scaling-stroke;
+  }
+  .box:focus-within { border-color: var(--hud-muted); }
+  .box-grip {
+    height: 14px;
+    margin: -6px 0 6px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  .box-grip::before {
+    content: "";
+    width: 34px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--box-line);
+  }
+  .box-body {
+    min-height: 84px;
+    outline: none;
+    cursor: text;
+    font-size: var(--fs, 15px);
+    line-height: 1.45;
+    color: var(--hud-fg);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .box-body:empty::before {
+    content: attr(data-placeholder);
+    color: var(--hud-muted);
+  }
+
+  /* Click menu */
+  .menu {
+    position: fixed;
+    z-index: 20;
+    min-width: 180px;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    background: var(--hud-bg);
+    border: 1px solid var(--hud-line);
+    border-radius: 12px;
+    box-shadow: 0 8px 24px var(--box-shadow);
+  }
+  .menu button {
+    font: inherit;
+    font-size: 14px;
+    color: var(--hud-fg);
+    text-align: left;
+    background: transparent;
+    border: 0;
+    border-radius: 8px;
+    padding: 9px 12px;
+    cursor: pointer;
+  }
+  .menu button:hover, .menu button:focus-visible { background: var(--hover); outline: none; }
+  .menu button.on { font-weight: 600; }
+  .menu button.on::after { content: "  \2713"; }
+  .menu button.danger { color: var(--danger); }
+  .menu .label {
+    font-size: 12px;
+    color: var(--hud-muted);
+    padding: 6px 12px 4px;
+  }
+  .menu hr {
+    width: calc(100% - 8px);
+    margin: 6px 4px;
+    border: 0;
+    border-top: 1px solid var(--hud-line);
+  }
+
+  .hud {
+    position: fixed;
+    z-index: 10;
+    left: max(16px, env(safe-area-inset-left, 0px));
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    max-width: calc(100% - 32px);
+    padding: 8px 8px 8px 14px;
+    background: var(--hud-bg);
+    border: 1px solid var(--hud-line);
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.3;
+  }
+  .hud .hint { color: var(--hud-muted); min-width: 0; }
+  .hud .zoom {
+    font-variant-numeric: tabular-nums;
+    min-width: 4ch;
+    text-align: right;
+  }
+  .hud button {
+    font: inherit;
+    color: var(--hud-fg);
+    background: transparent;
+    border: 1px solid var(--hud-line);
+    border-radius: 7px;
+    padding: 5px 10px;
+    cursor: pointer;
+  }
+  .hud button:hover { background: var(--hover); }
+  .hud button:focus-visible { outline: 2px solid var(--hud-fg); outline-offset: 2px; }
+  @media (max-width: 480px) { .hud .hint { display: none; } }
+
+  .signin {
+    position: fixed;
+    z-index: 10;
+    top: calc(16px + env(safe-area-inset-top, 0px));
+    left: max(16px, env(safe-area-inset-left, 0px));
+    font: inherit;
+    font-size: 13px;
+    color: var(--hud-fg);
+    background: var(--hud-bg);
+    border: 1px solid var(--hud-line);
+    border-radius: 10px;
+    padding: 9px 16px;
+    cursor: pointer;
+  }
+  .signin:hover { background: var(--hover); }
+  .signin:focus-visible { outline: 2px solid var(--hud-fg); outline-offset: 2px; }
+
+  .dialog-wrap {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: rgba(0, 0, 0, 0.35);
+  }
+  .dialog {
+    width: 100%;
+    max-width: 360px;
+    box-sizing: border-box;
+    padding: 22px;
+    background: var(--hud-bg);
+    border: 1px solid var(--hud-line);
+    border-radius: 16px;
+    box-shadow: 0 12px 40px var(--box-shadow);
+  }
+  .dialog h2 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+  .dialog p { margin: 0 0 16px; font-size: 14px; line-height: 1.45; color: var(--hud-muted); }
+  .dialog .note {
+    margin: -4px 0 16px;
+    padding: 10px 12px;
+    border: 1px solid var(--hud-line);
+    border-radius: 10px;
+    background: var(--bg);
+    color: var(--hud-fg);
+    font-size: 13px;
+  }
+  .dialog .actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+  .dialog button {
+    font: inherit;
+    font-size: 14px;
+    color: var(--hud-fg);
+    background: transparent;
+    border: 1px solid var(--hud-line);
+    border-radius: 9px;
+    padding: 8px 14px;
+    cursor: pointer;
+  }
+  .dialog button:hover { background: var(--hover); }
+  .dialog button.primary { background: var(--hud-fg); color: var(--hud-bg); border-color: var(--hud-fg); }
+  .dialog button.primary:hover { opacity: 0.9; }
+  .dialog button:focus-visible { outline: 2px solid var(--hud-fg); outline-offset: 2px; }
+  .dialog form { display: flex; flex-direction: column; gap: 12px; }
+  .dialog label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--hud-muted); }
+  .dialog input {
+    font: inherit;
+    font-size: 15px;
+    color: var(--hud-fg);
+    background: var(--bg);
+    border: 1px solid var(--hud-line);
+    border-radius: 9px;
+    padding: 9px 11px;
+    min-width: 0;
+  }
+  .dialog input:focus-visible { outline: 2px solid var(--hud-fg); outline-offset: 1px; }
+  .dialog .error { margin: 0; font-size: 13px; color: var(--danger); }
+  .dialog .switch { align-self: flex-start; border: 0; padding: 4px 0; font-size: 13px; color: var(--hud-muted); text-decoration: underline; }
+  .dialog .switch:hover { background: transparent; color: var(--hud-fg); }
+  .dialog .local-note { margin: 14px 0 0; font-size: 12px; }
+
+  /* Account screen: a blank full-page view. The theme switch stays on top of it. */
+  .account-screen {
+    position: fixed;
+    inset: 0;
+    z-index: 9;
+    background: var(--bg);
+    color: var(--hud-fg);
+    overflow: auto;
+  }
+  .account-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-top: calc(16px + env(safe-area-inset-top, 0px));
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .account-bar button {
+    font: inherit;
+    font-size: 13px;
+    color: var(--hud-fg);
+    background: var(--hud-bg);
+    border: 1px solid var(--hud-line);
+    border-radius: 10px;
+    padding: 9px 16px;
+    cursor: pointer;
+  }
+  .account-bar button:hover { background: var(--hover); }
+  .account-bar button:focus-visible { outline: 2px solid var(--hud-fg); outline-offset: 2px; }
+  body.account-open .signin, body.account-open .hud { display: none; }
+
+  /* Three columns: sheets on the left, teams in the middle, the right column is free for later. */
+  .account-layout {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: start;
+  }
+  .account-main.teams { margin: 0 auto; width: 100%; }
+  @media (max-width: 900px) {
+    .account-layout { grid-template-columns: minmax(0, 1fr); }
+    .account-main.teams { margin: 0; }
+  }
+  .team-create { display: flex; gap: 8px; }
+  .team-create input, .team-add input {
+    font: inherit;
+    font-size: 13px;
+    color: var(--hud-fg);
+    background: var(--bg);
+    border: 1px solid var(--hud-line);
+    border-radius: 8px;
+    padding: 7px 10px;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+  .team-create input:focus-visible, .team-add input:focus-visible,
+  .team-card button:focus-visible { outline: 2px solid var(--hud-fg); outline-offset: 1px; }
+  .team-list { list-style: none; margin: 16px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .team-card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--hud-bg);
+    border: 1px solid var(--hud-line);
+    border-radius: 10px;
+  }
+  .team-head { display: flex; flex-direction: column; gap: 2px; }
+  .team-head strong { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+  .team-head span { font-size: 11px; color: var(--hud-muted); }
+  .member-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .member-list li {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 9px;
+    font-size: 12px;
+    background: var(--bg);
+    border: 1px solid var(--hud-line);
+    border-radius: 999px;
+    overflow-wrap: anywhere;
+  }
+  .member-list .role { color: var(--hud-muted); }
+  .member-list button {
+    font: inherit;
+    font-size: 13px;
+    line-height: 1;
+    color: var(--hud-muted);
+    background: transparent;
+    border: 0;
+    padding: 0 0 0 2px;
+    cursor: pointer;
+  }
+  .member-list button:hover { color: var(--danger); }
+  .team-add { display: flex; gap: 6px; }
+  .team-card .error { margin: 0; font-size: 12px; color: var(--danger); }
+  .team-card .team-actions { display: flex; gap: 6px; }
+  .team-card button.small {
+    font: inherit;
+    font-size: 12px;
+    color: var(--hud-fg);
+    background: transparent;
+    border: 1px solid var(--hud-line);
+    border-radius: 7px;
+    padding: 4px 9px;
+    cursor: pointer;
+  }
+  .team-card button.small:hover { background: var(--hover); }
+  .team-card button.small.danger { color: var(--danger); }
+
+  .account-main {
+    max-width: 400px;
+    margin: 0;
+    box-sizing: border-box;
+    padding-top: 24px;
+    padding-bottom: 48px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .account-main h1 { margin: 0 0 12px; font-size: 17px; font-weight: 600; }
+  .account-main .primary {
+    font: inherit;
+    font-size: 13px;
+    color: var(--hud-bg);
+    background: var(--hud-fg);
+    border: 1px solid var(--hud-fg);
+    border-radius: 9px;
+    padding: 8px 14px;
+    cursor: pointer;
+  }
+  .account-main .primary:hover { opacity: 0.9; }
+  .account-main .primary:focus-visible, .sheet-row button:focus-visible { outline: 2px solid var(--hud-fg); outline-offset: 2px; }
+  .account-main .error { margin: 12px 0 0; font-size: 13px; color: var(--danger); }
+  .account-main .empty { margin: 20px 0 0; font-size: 14px; color: var(--hud-muted); }
+  .sheet-list { list-style: none; margin: 16px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .sheet-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 12px;
+    padding: 10px 12px;
+    background: var(--hud-bg);
+    border: 1px solid var(--hud-line);
+    border-radius: 10px;
+  }
+  .sheet-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .sheet-info strong { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+  .sheet-info span { font-size: 11px; color: var(--hud-muted); }
+  .account-main h2.subhead { margin: 22px 0 0; font-size: 13px; font-weight: 600; color: var(--hud-muted); }
+  .sheet-share {
+    flex: 1 1 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--hud-muted);
+  }
+  .sheet-share select {
+    font: inherit;
+    font-size: 12px;
+    color: var(--hud-fg);
+    background: var(--bg);
+    border: 1px solid var(--hud-line);
+    border-radius: 7px;
+    padding: 3px 6px;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .sheet-share select:focus-visible { outline: 2px solid var(--hud-fg); outline-offset: 1px; }
+  .sheet-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .rename-input {
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--hud-fg);
+    background: var(--bg);
+    border: 1px solid var(--hud-line);
+    border-radius: 8px;
+    padding: 4px 8px;
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .rename-input:focus-visible { outline: 2px solid var(--hud-fg); outline-offset: 1px; }
+  .sheet-info { flex: 1 1 160px; }
+  .sheet-row button {
+    font: inherit;
+    font-size: 12px;
+    color: var(--hud-fg);
+    background: transparent;
+    border: 1px solid var(--hud-line);
+    border-radius: 7px;
+    padding: 4px 9px;
+    cursor: pointer;
+  }
+  .sheet-row button:hover { background: var(--hover); }
+  .sheet-row button.danger { color: var(--danger); }
+
+  .topright {
+    position: fixed;
+    z-index: 10;
+    top: calc(16px + env(safe-area-inset-top, 0px));
+    right: max(16px, env(safe-area-inset-right, 0px));
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .sheet-name {
+    display: none;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    color: var(--hud-muted);
+  }
+  .save {
+    display: none;
+    font: inherit;
+    font-size: 13px;
+    color: var(--hud-fg);
+    background: var(--hud-bg);
+    border: 1px solid var(--hud-line);
+    border-radius: 10px;
+    padding: 9px 16px;
+    cursor: pointer;
+  }
+  .save:hover { background: var(--hover); }
+  .save:focus-visible { outline: 2px solid var(--hud-fg); outline-offset: 2px; }
+  .save.dirty::after {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    margin-left: 8px;
+    border-radius: 50%;
+    background: var(--hud-fg);
+  }
+  body.sheet-open .sheet-name { display: block; }
+  body.sheet-open .save { display: block; }
+  body.account-open .sheet-name, body.account-open .save { display: none; }
+  @media (max-width: 480px) { body .sheet-name { display: none; } }
+
+  .theme {
+    display: flex;
+    gap: 2px;
+    padding: 4px;
+    background: var(--hud-bg);
+    border: 1px solid var(--hud-line);
+    border-radius: 10px;
+  }
+  .theme button {
+    font: inherit;
+    font-size: 13px;
+    color: var(--hud-muted);
+    background: transparent;
+    border: 0;
+    border-radius: 7px;
+    padding: 5px 11px;
+    cursor: pointer;
+  }
+  .theme button:hover { color: var(--hud-fg); }
+  .theme button[aria-pressed="true"] { background: var(--hover); color: var(--hud-fg); }
+  .theme button:focus-visible { outline: 2px solid var(--hud-fg); outline-offset: 1px; }
+</style>
+
+<canvas id="grid" aria-label="Infinite dot grid. Drag to pan, scroll or pinch to zoom, right-click for a menu."></canvas>
+<div id="world"></div>
+<div class="menu" id="menu" role="menu" hidden></div>
+<button class="signin" id="signin" type="button">Sign in</button>
+<div class="dialog-wrap" id="signin-dialog" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="signin-title">
+    <div id="auth-form-view">
+      <h2 id="signin-title">Sign in</h2>
+      <form id="auth-form" novalidate>
+        <label for="auth-user">Username
+          <input id="auth-user" type="text" autocomplete="username" autocapitalize="none" spellcheck="false">
+        </label>
+        <label for="auth-pass">Password
+          <input id="auth-pass" type="password" autocomplete="current-password">
+        </label>
+        <label for="auth-pass2" id="auth-pass2-row" hidden>Confirm password
+          <input id="auth-pass2" type="password" autocomplete="new-password">
+        </label>
+        <p class="error" id="auth-error" role="alert" hidden></p>
+        <button type="button" class="switch" id="auth-switch">Create an account</button>
+        <div class="actions">
+          <button type="button" id="auth-cancel">Cancel</button>
+          <button type="submit" class="primary" id="auth-submit">Sign in</button>
+        </div>
+      </form>
+      <p class="local-note">Accounts are stored in this browser only. They are not shared between devices.</p>
+    </div>
+    <div id="auth-user-view" hidden>
+      <h2>Signed in</h2>
+      <p id="auth-user-name"></p>
+      <div class="actions">
+        <button type="button" id="auth-close">Close</button>
+        <button type="button" class="primary" id="auth-signout">Sign out</button>
+      </div>
+    </div>
+  </div>
+</div>
+<section class="account-screen" id="account-screen" aria-label="Account" hidden>
+  <div class="account-bar">
+    <button type="button" id="acct-back">Back</button>
+    <button type="button" id="acct-signout">Sign out</button>
+  </div>
+  <div class="account-layout">
+  <main class="account-main" id="account-main">
+    <h1>Your sheets</h1>
+    <button type="button" class="primary" id="new-sheet">Create New Sheet</button>
+    <p class="error" id="sheet-error" role="alert" hidden></p>
+    <p class="empty" id="sheet-empty">No sheets yet. Create one to get started.</p>
+    <ul class="sheet-list" id="sheet-list"></ul>
+    <h2 class="subhead" id="shared-title" hidden>Shared with you</h2>
+    <ul class="sheet-list" id="shared-list" hidden></ul>
+  </main>
+  <section class="account-main teams" aria-labelledby="teams-title">
+    <h1 id="teams-title">Teams</h1>
+    <form class="team-create" id="team-create" novalidate>
+      <input id="team-name" type="text" maxlength="40" autocomplete="off" placeholder="Team name" aria-label="Team name">
+      <button type="submit" class="primary">Create team</button>
+    </form>
+    <p class="error" id="team-error" role="alert" hidden></p>
+    <p class="empty" id="team-empty">No teams yet. Create one above.</p>
+    <ul class="team-list" id="team-list"></ul>
+  </section>
+  </div>
+</section>
+<div class="topright">
+  <span class="sheet-name" id="sheet-name"></span>
+  <button type="button" class="save" id="save-sheet">Save</button>
+  <div class="theme" role="group" aria-label="Color mode">
+    <button type="button" data-mode="light" aria-pressed="false">Light</button>
+    <button type="button" data-mode="dark" aria-pressed="false">Dark</button>
+  </div>
+</div>
+<div class="hud">
+  <span class="hint">Right-click for menu, right-drag to select boxes. Click a box's dot to extend it. Drag to pan. Scroll or pinch to zoom.</span>
+  <span class="zoom" id="zoom">100%</span>
+  <button id="reset" type="button">Reset</button>
+</div>
+
+<script>
+(function () {
+  var canvas = document.getElementById('grid');
+  var ctx = canvas.getContext('2d');
+  var world = document.getElementById('world');
+  var menu = document.getElementById('menu');
+  var zoomEl = document.getElementById('zoom');
+  var BASE = 32;            // world units between dots at 100%
+  var MIN_S = 0.002, MAX_S = 64;
+  var s = 1, ox = 0, oy = 0; // screen = world * s + offset
+  var w = 0, h = 0, dpr = 1, queued = false;
+  var menuWorld = { x: 0, y: 0 };
+  var links = [];
+  var SVGNS = 'http://www.w3.org/2000/svg';
+  var linkSvg = document.createElementNS(SVGNS, 'svg');
+  linkSvg.setAttribute('class', 'links');
+  world.appendChild(linkSvg);
+
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    var nw = canvas.clientWidth, nh = canvas.clientHeight;
+    if (!w) { ox = nw / 2; oy = nh / 2; }
+    w = nw; h = nh;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    request();
+  }
+
+  function request() {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(draw);
+  }
+
+  function css(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function layer(step, alpha, radius, dotColor) {
+    var px = step * s;
+    var x0 = Math.floor((0 - ox) / px) * px + ox;
+    var y0 = Math.floor((0 - oy) / px) * px + oy;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = dotColor;
+    ctx.beginPath();
+    for (var x = x0; x < w + px; x += px) {
+      for (var y = y0; y < h + px; y += px) {
+        ctx.moveTo(x + radius, y);
+        ctx.arc(x, y, radius, 0, 6.2832);
+      }
+    }
+    ctx.fill();
+  }
+
+  function draw() {
+    queued = false;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = css('--bg');
+    ctx.fillRect(0, 0, w, h);
+
+    var dot = css('--dot');
+    // Pick the grid level whose on-screen spacing sits between 28 and 56px,
+    // and fade the next finer level in as the coarse one spreads out.
+    var n = Math.ceil(Math.log2(28 / (BASE * s)));
+    var coarse = BASE * Math.pow(2, n);
+    var coarsePx = coarse * s;
+    var t = Math.min(1, Math.max(0, (coarsePx - 28) / 28));
+    if (t > 0.02) layer(coarse / 2, t, 1.2, dot);
+    layer(coarse, 1, 1.2 + 0.5 * t, dot);
+
+    ctx.globalAlpha = 1;
+    world.style.transform = 'translate(' + ox + 'px,' + oy + 'px) scale(' + s + ')';
+    zoomEl.textContent = fmt(s * 100) + '%';
+  }
+
+  function fmt(v) {
+    if (v >= 100) return Math.round(v).toLocaleString();
+    if (v >= 10) return v.toFixed(0);
+    if (v >= 1) return v.toFixed(1);
+    return v.toPrecision(2);
+  }
+
+  function zoomAt(cx, cy, factor) {
+    var ns = Math.min(MAX_S, Math.max(MIN_S, s * factor));
+    var f = ns / s;
+    ox = cx - (cx - ox) * f;
+    oy = cy - (cy - oy) * f;
+    s = ns;
+    request();
+  }
+
+  // Menu
+  function showMenu(x, y) {
+    menu.hidden = false;
+    var mw = menu.offsetWidth, mh = menu.offsetHeight;
+    menu.style.left = Math.max(8, Math.min(x, window.innerWidth - mw - 8)) + 'px';
+    menu.style.top = Math.max(8, Math.min(y, window.innerHeight - mh - 8)) + 'px';
+  }
+  function closeMenu() { menu.hidden = true; }
+
+  function menuItem(label, onClick, opts) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('role', 'menuitem');
+    b.textContent = label;
+    if (opts && opts.danger) b.className = 'danger';
+    if (opts && opts.on) b.className = 'on';
+    b.addEventListener('click', function () { closeMenu(); onClick(); });
+    return b;
+  }
+  function menuLabel(text) {
+    var d = document.createElement('div');
+    d.className = 'label';
+    d.textContent = text;
+    return d;
+  }
+
+  // Right-click on the grid: add a box where you clicked.
+  function openCanvasMenu(x, y) {
+    var wx = (x - ox) / s, wy = (y - oy) / s;
+    menu.textContent = '';
+    menu.appendChild(menuItem('New Starter, dot on left', function () { createBox(wx, wy, 'left'); }));
+    menu.appendChild(menuItem('New Starter, dot on right', function () { createBox(wx, wy, 'right'); }));
+    menu.appendChild(menuItem('New Starter, dots on both sides', function () { createBox(wx, wy, 'both'); }));
+    var sel = selectedBoxes();
+    if (sel.length) {
+      menu.appendChild(document.createElement('hr'));
+      menu.appendChild(menuItem('Delete ' + sel.length + (sel.length === 1 ? ' selected box' : ' selected boxes'),
+        function () { deleteBoxes(sel); }, { danger: true }));
+    }
+    showMenu(x, y);
+  }
+
+  // Right-click on a box: change its text size or delete it.
+  var SIZES = [['Small', 12], ['Medium', 15], ['Large', 22], ['Extra large', 32]];
+  function openBoxMenu(x, y, box) {
+    // If the box is part of a multi-box selection, the menu acts on all of them.
+    var sel = selectedBoxes();
+    if (sel.indexOf(box) === -1) { clearSelection(); sel = []; }
+    var targets = sel.length > 1 ? sel : [box];
+    var many = targets.length > 1;
+    var cur = parseFloat(box.style.getPropertyValue('--fs')) || 15;
+    menu.textContent = '';
+    menu.appendChild(menuLabel(many ? 'Text size (' + targets.length + ' boxes)' : 'Text size'));
+    SIZES.forEach(function (sz) {
+      menu.appendChild(menuItem(sz[0], function () {
+        targets.forEach(function (t) { t.style.setProperty('--fs', sz[1] + 'px'); });
+      }, { on: sz[1] === cur }));
+    });
+    menu.appendChild(document.createElement('hr'));
+    menu.appendChild(menuItem(many ? 'Delete ' + targets.length + ' boxes' : 'Delete box',
+      function () { deleteBoxes(targets); }, { danger: true }));
+    showMenu(x, y);
+  }
+
+  // Left-click on a box's dot: extend the map on that side.
+  function openDotMenu(x, y, box, side) {
+    menu.textContent = '';
+    menu.appendChild(menuItem('Add extension', function () { addExtension(box, side); }));
+    showMenu(x, y);
+  }
+
+  function addExtension(parent, side) {
+    var pl = parseFloat(parent.style.left), pt = parseFloat(parent.style.top);
+    var count = links.filter(function (l) { return l.parent === parent && l.side === side; }).length;
+    var gap = 150, bw = 240;
+    var cx = side === 'left' ? pl - gap - bw : pl + parent.offsetWidth + gap;
+    var cy = pt + count * 170;
+    // Every extension gets dots on both sides; the one facing its parent is already connected.
+    var child = createBox(cx, cy, 'both');
+    connect(parent, child, side);
+  }
+
+  // Join a parent to a child with a curved line and use up the child's dot that faces the parent.
+  function connect(parent, child, side) {
+    var inward = child.querySelector('.box-dot[data-side="' + (side === 'left' ? 'right' : 'left') + '"]');
+    if (inward) inward.disabled = true;
+    var path = document.createElementNS(SVGNS, 'path');
+    path.setAttribute('class', 'link');
+    linkSvg.appendChild(path);
+    links.push({ parent: parent, child: child, path: path, side: side });
+    updateLinks();
+  }
+
+  // Redraw every connector from the parent's dot to the near edge of its extension.
+  function updateLinks() {
+    links = links.filter(function (l) {
+      var ok = l.parent.isConnected && l.child.isConnected;
+      if (!ok) l.path.remove();
+      return ok;
+    });
+    links.forEach(function (l) {
+      var left = l.side === 'left';
+      var pl = parseFloat(l.parent.style.left), pt = parseFloat(l.parent.style.top);
+      var cl = parseFloat(l.child.style.left), ct = parseFloat(l.child.style.top);
+      var x1 = left ? pl : pl + l.parent.offsetWidth;
+      var y1 = pt + l.parent.offsetHeight / 2;
+      var x2 = left ? cl + l.child.offsetWidth : cl;
+      var y2 = ct + l.child.offsetHeight / 2;
+      var dx = (x2 - x1) / 2;
+      l.path.setAttribute('d',
+        'M' + x1 + ' ' + y1 + ' C' + (x1 + dx) + ' ' + y1 + ' ' + (x2 - dx) + ' ' + y2 + ' ' + x2 + ' ' + y2);
+    });
+  }
+
+  document.addEventListener('pointerdown', function (e) {
+    if (!menu.hidden && !menu.contains(e.target)) closeMenu();
+  }, true);
+  window.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { closeMenu(); clearSelection(); }
+  });
+
+  // Boxes
+  // sides: 'left', 'right' or 'both' (which edges get a dot)
+  function createBox(wx, wy, sides, opts) {
+    var box = document.createElement('div');
+    box.className = 'box';
+    box.dataset.id = (opts && opts.id) || uid();
+    box.style.left = wx + 'px';
+    box.style.top = wy + 'px';
+    var grip = document.createElement('div');
+    grip.className = 'box-grip';
+    box.appendChild(grip);
+    var body = document.createElement('div');
+    body.className = 'box-body';
+    body.setAttribute('role', 'textbox');
+    body.setAttribute('aria-multiline', 'true');
+    body.setAttribute('aria-label', 'Starter text');
+    body.setAttribute('data-placeholder', 'Type here');
+    body.contentEditable = 'plaintext-only';
+    if (body.contentEditable !== 'plaintext-only') body.contentEditable = 'true';
+    box.appendChild(body);
+    ['left', 'right'].forEach(function (side) {
+      if (sides !== 'both' && sides !== side) return;
+      var dot = document.createElement('button');
+      dot.type = 'button';
+      dot.className = 'box-dot';
+      dot.setAttribute('data-side', side);
+      dot.setAttribute('aria-label', 'Dot on the ' + side + ': open menu to add an extension');
+      dot.addEventListener('click', function (e) {
+        var r = dot.getBoundingClientRect();
+        openDotMenu(e.clientX || r.right, e.clientY || r.top, box, side);
+      });
+      box.appendChild(dot);
+    });
+    // Drag the box by its grip bar or its padding.
+    var drag = null;
+    box.addEventListener('pointerdown', function (e) {
+      if (e.button !== 0 || (e.target !== box && e.target !== grip)) return;
+      e.preventDefault();
+      box.setPointerCapture(e.pointerId);
+      drag = {
+        id: e.pointerId, x: e.clientX, y: e.clientY,
+        bx: parseFloat(box.style.left), by: parseFloat(box.style.top)
+      };
+      box.classList.add('moving');
+    });
+    box.addEventListener('pointermove', function (e) {
+      if (!drag || e.pointerId !== drag.id) return;
+      box.style.left = (drag.bx + (e.clientX - drag.x) / s) + 'px';
+      box.style.top = (drag.by + (e.clientY - drag.y) / s) + 'px';
+      updateLinks();
+    });
+    function endDrag(e) {
+      if (drag && e.pointerId === drag.id) { drag = null; box.classList.remove('moving'); }
+    }
+    box.addEventListener('pointerup', endDrag);
+    box.addEventListener('pointercancel', endDrag);
+    world.appendChild(box);
+    new ResizeObserver(updateLinks).observe(box);
+    if (!(opts && opts.silent)) body.focus();
+    return box;
+  }
+
+  window.addEventListener('contextmenu', function (e) {
+    e.preventDefault();
+    if (e.target.closest && e.target.closest('.menu')) return;
+    var box = e.target.closest && e.target.closest('.box');
+    if (box) openBoxMenu(e.clientX, e.clientY, box);
+    else if (e.target === canvas) {
+      // A mouse right-click is handled on release (see endMarquee); this covers long-press and ctrl-click.
+      if (Date.now() - lastRightDown > 800) openCanvasMenu(e.clientX, e.clientY);
+    }
+    else closeMenu();
+  });
+
+  // Selection: right-drag on the grid draws a box and selects every box it touches.
+  // A right-click without dragging opens the grid menu instead.
+  var marquee = null, lastRightDown = 0;
+  var marqueeEl = document.createElement('div');
+  marqueeEl.className = 'marquee';
+  marqueeEl.hidden = true;
+  document.body.appendChild(marqueeEl);
+
+  function selectedBoxes() { return Array.prototype.slice.call(world.querySelectorAll('.box.selected')); }
+  function clearSelection() { selectedBoxes().forEach(function (b) { b.classList.remove('selected'); }); }
+  function deleteBoxes(list) {
+    list.forEach(function (b) { b.remove(); });
+    updateLinks();
+  }
+
+  function startMarquee(e) {
+    canvas.setPointerCapture(e.pointerId);
+    lastRightDown = Date.now();
+    closeMenu();
+    var active = document.activeElement;
+    if (active && active.blur && active !== document.body) active.blur();
+    marquee = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false };
+  }
+  function moveMarquee(e) {
+    if (!marquee.moved && Math.hypot(e.clientX - marquee.x, e.clientY - marquee.y) <= 5) return;
+    marquee.moved = true;
+    marqueeEl.hidden = false;
+    marqueeEl.style.left = Math.min(marquee.x, e.clientX) + 'px';
+    marqueeEl.style.top = Math.min(marquee.y, e.clientY) + 'px';
+    marqueeEl.style.width = Math.abs(e.clientX - marquee.x) + 'px';
+    marqueeEl.style.height = Math.abs(e.clientY - marquee.y) + 'px';
+  }
+  function endMarquee(e) {
+    var m = marquee;
+    marquee = null;
+    marqueeEl.hidden = true;
+    if (e.type === 'pointercancel') return;
+    if (m.moved) {
+      var x1 = Math.min(m.x, e.clientX), x2 = Math.max(m.x, e.clientX);
+      var y1 = Math.min(m.y, e.clientY), y2 = Math.max(m.y, e.clientY);
+      clearSelection();
+      Array.prototype.forEach.call(world.querySelectorAll('.box'), function (b) {
+        var r = b.getBoundingClientRect();
+        if (r.right >= x1 && r.left <= x2 && r.bottom >= y1 && r.top <= y2) b.classList.add('selected');
+      });
+    } else {
+      openCanvasMenu(e.clientX, e.clientY);
+    }
+  }
+
+  // Pointer handling: one pointer pans, two pointers pan and pinch.
+  // A press that barely moves counts as a click and opens the menu.
+  var pointers = new Map();
+  var lastPinch = 0, downX = 0, downY = 0, moved = false, multi = false;
+
+  canvas.addEventListener('pointerdown', function (e) {
+    if (e.button === 2 && e.pointerType === 'mouse') { startMarquee(e); return; }
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    clearSelection();
+    canvas.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 1) { downX = e.clientX; downY = e.clientY; moved = false; multi = false; }
+    if (pointers.size === 2) { multi = true; lastPinch = pinchDist(); }
+    var active = document.activeElement;
+    if (active && active.blur && active !== document.body) active.blur();
+  });
+
+  canvas.addEventListener('pointermove', function (e) {
+    if (marquee && e.pointerId === marquee.id) { moveMarquee(e); return; }
+    var p = pointers.get(e.pointerId);
+    if (!p) return;
+    if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) {
+      if (!moved) canvas.classList.add('dragging');
+      moved = true;
+    }
+    if (pointers.size === 1) {
+      if (!moved) return;
+      ox += e.clientX - p.x;
+      oy += e.clientY - p.y;
+      p.x = e.clientX; p.y = e.clientY;
+      request();
+    } else if (pointers.size === 2) {
+      var before = center();
+      p.x = e.clientX; p.y = e.clientY;
+      var after = center();
+      ox += after.x - before.x;
+      oy += after.y - before.y;
+      var d = pinchDist();
+      if (lastPinch > 0 && d > 0) zoomAt(after.x, after.y, d / lastPinch);
+      lastPinch = d;
+      request();
+    }
+  });
+
+  function endPointer(e) {
+    if (marquee && e.pointerId === marquee.id) { endMarquee(e); return; }
+    if (!pointers.has(e.pointerId)) return;
+    pointers.delete(e.pointerId);
+    if (pointers.size < 2) lastPinch = 0;
+    if (pointers.size === 0) canvas.classList.remove('dragging');
+  }
+  canvas.addEventListener('pointerup', endPointer);
+  canvas.addEventListener('pointercancel', endPointer);
+
+  function pts() { return Array.from(pointers.values()); }
+  function center() {
+    var a = pts();
+    return { x: (a[0].x + a[1].x) / 2, y: (a[0].y + a[1].y) / 2 };
+  }
+  function pinchDist() {
+    var a = pts();
+    return Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
+  }
+
+  window.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    closeMenu();
+    var unit = e.deltaMode === 1 ? 16 : 1;
+    var dy = e.deltaY * unit;
+    zoomAt(e.clientX, e.clientY, Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.0015)));
+  }, { passive: false });
+
+  function reset() {
+    closeMenu();
+    s = 1; ox = w / 2; oy = h / 2;
+    request();
+  }
+  document.getElementById('reset').addEventListener('click', reset);
+
+  window.addEventListener('keydown', function (e) {
+    var t = e.target;
+    if (t && t.closest && (t.closest('.box') || t.closest('.menu') || t.closest('input, textarea, select'))) return;
+    if ((e.key === 'Delete' || e.key === 'Backspace') && selectedBoxes().length) {
+      e.preventDefault();
+      deleteBoxes(selectedBoxes());
+      return;
+    }
+    var step = 60;
+    if (e.key === 'ArrowLeft') ox += step;
+    else if (e.key === 'ArrowRight') ox -= step;
+    else if (e.key === 'ArrowUp') oy += step;
+    else if (e.key === 'ArrowDown') oy -= step;
+    else if (e.key === '+' || e.key === '=') zoomAt(w / 2, h / 2, 1.25);
+    else if (e.key === '-') zoomAt(w / 2, h / 2, 0.8);
+    else return;
+    closeMenu();
+    request();
+  });
+
+  window.addEventListener('resize', function () { closeMenu(); resize(); });
+  var mq = window.matchMedia('(prefers-color-scheme: dark)');
+  if (mq.addEventListener) mq.addEventListener('change', request);
+  new MutationObserver(request).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+  // Accounts live in this browser's localStorage only (no server). Passwords are salted and
+  // hashed with PBKDF2, never stored as typed.
+  var ACCOUNTS_KEY = 'dotgrid-accounts', SESSION_KEY = 'dotgrid-session';
+  var signinBtn = document.getElementById('signin');
+  var signinDialog = document.getElementById('signin-dialog');
+  var formView = document.getElementById('auth-form-view');
+  var userView = document.getElementById('auth-user-view');
+  var userInput = document.getElementById('auth-user');
+  var passInput = document.getElementById('auth-pass');
+  var pass2Input = document.getElementById('auth-pass2');
+  var pass2Row = document.getElementById('auth-pass2-row');
+  var errEl = document.getElementById('auth-error');
+  var submitBtn = document.getElementById('auth-submit');
+  var switchBtn = document.getElementById('auth-switch');
+  var creating = false, currentUser = null;
+
+  function readAccounts() {
+    try { return JSON.parse(localStorage.getItem(ACCOUNTS_KEY)) || {}; } catch (err) { return {}; }
+  }
+  function writeAccounts(a) {
+    try { localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(a)); return true; } catch (err) { return false; }
+  }
+  function toHex(buf) {
+    return Array.prototype.map.call(new Uint8Array(buf), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+  }
+  function fromHex(hex) {
+    var out = new Uint8Array(hex.length / 2);
+    for (var i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+    return out;
+  }
+  function hashPassword(pw, salt) {
+    var enc = new TextEncoder();
+    return crypto.subtle.importKey('raw', enc.encode(pw), 'PBKDF2', false, ['deriveBits']).then(function (key) {
+      return crypto.subtle.deriveBits({ name: 'PBKDF2', salt: salt, iterations: 150000, hash: 'SHA-256' }, key, 256);
+    }).then(toHex);
+  }
+
+  function showError(msg) { errEl.textContent = msg; errEl.hidden = !msg; }
+  function setMode(createMode) {
+    creating = createMode;
+    document.getElementById('signin-title').textContent = creating ? 'Create an account' : 'Sign in';
+    submitBtn.textContent = creating ? 'Create account' : 'Sign in';
+    switchBtn.textContent = creating ? 'I already have an account' : 'Create an account';
+    pass2Row.hidden = !creating;
+    passInput.setAttribute('autocomplete', creating ? 'new-password' : 'current-password');
+    showError('');
+  }
+  function setSignedIn(name) {
+    currentUser = name;
+    signinBtn.textContent = name || 'Sign in';
+    try {
+      if (name) localStorage.setItem(SESSION_KEY, name); else localStorage.removeItem(SESSION_KEY);
+    } catch (err) {}
+  }
+  function openSignin() {
+    // Signed in: the account name opens the account screen instead of the dialog.
+    if (currentUser) { showAccount(); return; }
+    signinDialog.hidden = false;
+    userView.hidden = true;
+    formView.hidden = false;
+    setMode(false);
+    passInput.value = ''; pass2Input.value = '';
+    userInput.focus();
+  }
+
+  var accountScreen = document.getElementById('account-screen');
+  function showAccount() {
+    accountScreen.hidden = false;
+    document.body.classList.add('account-open');
+    document.getElementById('sheet-error').hidden = true;
+    renderSheets();
+    renderTeams();
+    try { if (location.hash !== '#account') location.hash = 'account'; } catch (err) {}
+    document.getElementById('acct-back').focus();
+  }
+  function hideAccount() {
+    if (accountScreen.hidden) return;
+    accountScreen.hidden = true;
+    document.body.classList.remove('account-open');
+    try { if (location.hash === '#account') location.hash = ''; } catch (err) {}
+  }
+  document.getElementById('acct-back').addEventListener('click', hideAccount);
+  document.getElementById('acct-signout').addEventListener('click', function () {
+    // Save an open sheet with unsaved changes, then put back whatever was on the grid before it.
+    if (currentSheet && dirty) saveSheet();
+    hideAccount();
+    leaveSheet();
+    setSignedIn(null);
+  });
+  window.addEventListener('hashchange', function () {
+    if (location.hash === '#account' && currentUser) showAccount(); else hideAccount();
+  });
+  function closeSignin() {
+    signinDialog.hidden = true;
+    signinBtn.focus();
+  }
+
+  document.getElementById('auth-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var name = userInput.value.trim();
+    var key = name.toLowerCase();
+    var pw = passInput.value;
+    if (!name) { showError('Enter a username.'); return; }
+    if (!pw) { showError('Enter a password.'); return; }
+    if (!window.crypto || !crypto.subtle) { showError('This browser cannot create accounts here.'); return; }
+    var accounts = readAccounts();
+    submitBtn.disabled = true;
+    var done = function () { submitBtn.disabled = false; };
+    if (creating) {
+      if (pw.length < 8) { showError('Use a password with at least 8 characters.'); done(); return; }
+      if (pw !== pass2Input.value) { showError('The two passwords do not match.'); done(); return; }
+      if (accounts[key]) { showError('That username is taken. Pick another or sign in.'); done(); return; }
+      var salt = crypto.getRandomValues(new Uint8Array(16));
+      hashPassword(pw, salt).then(function (hash) {
+        accounts[key] = { name: name, salt: toHex(salt), hash: hash };
+        if (!writeAccounts(accounts)) { showError('Could not save the account. This browser is blocking storage.'); done(); return; }
+        setSignedIn(name);
+        done();
+        closeSignin();
+      }, function () { showError('Something went wrong. Try again.'); done(); });
+    } else {
+      var acct = accounts[key];
+      if (!acct) { showError('No account with that username. Create one instead.'); done(); return; }
+      hashPassword(pw, fromHex(acct.salt)).then(function (hash) {
+        if (hash !== acct.hash) { showError('Wrong password.'); done(); return; }
+        setSignedIn(acct.name);
+        done();
+        closeSignin();
+      }, function () { showError('Something went wrong. Try again.'); done(); });
+    }
+  });
+
+  switchBtn.addEventListener('click', function () { setMode(!creating); });
+  signinBtn.addEventListener('click', openSignin);
+  document.getElementById('auth-cancel').addEventListener('click', closeSignin);
+  document.getElementById('auth-close').addEventListener('click', closeSignin);
+  document.getElementById('auth-signout').addEventListener('click', function () { setSignedIn(null); closeSignin(); });
+  signinDialog.addEventListener('pointerdown', function (e) { if (e.target === signinDialog) closeSignin(); });
+  window.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !signinDialog.hidden) closeSignin();
+  });
+  try {
+    var who = localStorage.getItem(SESSION_KEY);
+    if (who && readAccounts()[who.toLowerCase()]) setSignedIn(who);
+  } catch (err) {}
+
+  // Sheets: each account keeps its own saved sheets (boxes, lines and view) in this browser.
+  var currentSheet = null, scratch = null, dirty = false, savedTimer = null;
+  var saveBtn = document.getElementById('save-sheet');
+  var sheetNameEl = document.getElementById('sheet-name');
+  var sheetList = document.getElementById('sheet-list');
+  var sheetEmpty = document.getElementById('sheet-empty');
+  var sheetError = document.getElementById('sheet-error');
+
+  function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+  // Sheets are stored under their owner. Pass an owner key to read a teammate's list; default is the signed-in user.
+  function sheetsKey(ownerKey) { return 'dotgrid-sheets:' + (ownerKey || currentUser.toLowerCase()); }
+  function readSheets(ownerKey) {
+    try {
+      var a = JSON.parse(localStorage.getItem(sheetsKey(ownerKey)));
+      return Array.isArray(a) ? a : [];
+    } catch (err) { return []; }
+  }
+  function writeSheets(a, ownerKey) {
+    try { localStorage.setItem(sheetsKey(ownerKey), JSON.stringify(a)); return true; } catch (err) { return false; }
+  }
+  function setDirty(v) { dirty = v; saveBtn.classList.toggle('dirty', v); }
+
+  // Any edit to the boxes (not panning or zooming) marks the open sheet as unsaved.
+  var changeObserver = new MutationObserver(function (records) {
+    if (!currentSheet) return;
+    var edited = records.some(function (r) { return !(r.type === 'attributes' && r.target === world); });
+    if (edited) setDirty(true);
+  });
+  changeObserver.observe(world, {
+    childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['style']
+  });
+
+  function serialize() {
+    var boxes = Array.prototype.map.call(world.querySelectorAll('.box'), function (b) {
+      var hasLeft = !!b.querySelector('.box-dot[data-side="left"]');
+      var hasRight = !!b.querySelector('.box-dot[data-side="right"]');
+      return {
+        id: b.dataset.id,
+        x: parseFloat(b.style.left),
+        y: parseFloat(b.style.top),
+        fs: parseFloat(b.style.getPropertyValue('--fs')) || null,
+        sides: hasLeft && hasRight ? 'both' : (hasLeft ? 'left' : 'right'),
+        text: b.querySelector('.box-body').innerText
+      };
+    });
+    var lines = links.filter(function (l) { return l.parent.isConnected && l.child.isConnected; }).map(function (l) {
+      return { parent: l.parent.dataset.id, child: l.child.dataset.id, side: l.side };
+    });
+    return { boxes: boxes, links: lines, view: { s: s, ox: ox, oy: oy } };
+  }
+
+  function clearWorld() {
+    Array.prototype.forEach.call(world.querySelectorAll('.box'), function (b) { b.remove(); });
+    links.forEach(function (l) { l.path.remove(); });
+    links = [];
+  }
+
+  function loadData(data) {
+    clearWorld();
+    var byId = {};
+    (data.boxes || []).forEach(function (d) {
+      var b = createBox(d.x, d.y, d.sides, { id: d.id, silent: true });
+      if (d.fs) b.style.setProperty('--fs', d.fs + 'px');
+      if (d.text) b.querySelector('.box-body').textContent = d.text;
+      byId[d.id] = b;
+    });
+    (data.links || []).forEach(function (l) {
+      if (byId[l.parent] && byId[l.child]) connect(byId[l.parent], byId[l.child], l.side);
+    });
+    var v = data.view || {};
+    s = v.s || 1;
+    ox = typeof v.ox === 'number' ? v.ox : w / 2;
+    oy = typeof v.oy === 'number' ? v.oy : h / 2;
+    request();
+    updateLinks();
+    changeObserver.takeRecords();
+    setDirty(false);
+  }
+
+  function flash(msg) {
+    saveBtn.textContent = msg;
+    clearTimeout(savedTimer);
+    savedTimer = setTimeout(function () { saveBtn.textContent = 'Save'; }, 1600);
+  }
+
+  function saveSheet() {
+    if (!currentSheet || !currentUser) return false;
+    // Saving always writes back to the sheet's owner, so teammates edit the same copy.
+    var ownerKey = currentSheet.ownerKey;
+    var sheets = readSheets(ownerKey);
+    var i = sheets.findIndex(function (x) { return x.id === currentSheet.id; });
+    if (i < 0 && ownerKey !== currentUser.toLowerCase()) { flash('Sheet was removed'); return false; }
+    var base = i >= 0 ? sheets[i] : { id: currentSheet.id, name: currentSheet.name };
+    var rec = Object.assign({}, base, { savedAt: Date.now(), data: serialize() });
+    if (i >= 0) sheets[i] = rec; else sheets.push(rec);
+    if (!writeSheets(sheets, ownerKey)) { flash('Could not save'); return false; }
+    setDirty(false);
+    flash('Saved');
+    return true;
+  }
+
+  function enterSheet(rec, ownerKey) {
+    if (!currentSheet) scratch = serialize();
+    var me = currentUser.toLowerCase();
+    currentSheet = { id: rec.id, name: rec.name, ownerKey: ownerKey || me };
+    document.body.classList.add('sheet-open');
+    sheetNameEl.textContent = rec.name + (ownerKey && ownerKey !== me ? ' · shared' : '');
+    loadData(rec.data || {});
+    hideAccount();
+  }
+
+  function leaveSheet() {
+    if (!currentSheet) return;
+    currentSheet = null;
+    document.body.classList.remove('sheet-open');
+    loadData(scratch || {});
+    scratch = null;
+  }
+
+  function newSheet() {
+    if (currentSheet && dirty) saveSheet();
+    var sheets = readSheets();
+    var names = sheets.map(function (x) { return x.name; });
+    var n = sheets.length + 1;
+    while (names.indexOf('Sheet ' + n) !== -1) n++;
+    var rec = {
+      id: uid(), name: 'Sheet ' + n, savedAt: Date.now(),
+      data: { boxes: [], links: [], view: { s: 1, ox: w / 2, oy: h / 2 } }
+    };
+    sheets.push(rec);
+    if (!writeSheets(sheets)) {
+      sheetError.textContent = 'Could not create the sheet. This browser is blocking storage.';
+      sheetError.hidden = false;
+      return;
+    }
+    enterSheet(rec);
+  }
+
+  function openSheet(id, ownerKey) {
+    if (currentSheet && currentSheet.id === id) { hideAccount(); return; }
+    if (currentSheet && dirty) saveSheet();
+    var rec = readSheets(ownerKey).find(function (x) { return x.id === id; });
+    if (rec) enterSheet(rec, ownerKey);
+  }
+
+  function deleteSheet(id) {
+    var sheets = readSheets().filter(function (x) { return x.id !== id; });
+    writeSheets(sheets);
+    if (currentSheet && currentSheet.id === id) leaveSheet();
+    renderSheets();
+  }
+
+  // Swap a sheet's title for a text field. Enter or clicking away saves, Escape cancels.
+  function startRename(sh, title, info, renBtn) {
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.id = 'rename-input';
+    input.className = 'rename-input';
+    input.value = sh.name;
+    input.maxLength = 60;
+    input.setAttribute('aria-label', 'Sheet name');
+    info.replaceChild(input, title);
+    renBtn.disabled = true;
+    input.focus();
+    input.select();
+    var finished = false;
+    function finish(save) {
+      if (finished) return;
+      finished = true;
+      var name = input.value.trim();
+      if (save && name && name !== sh.name) {
+        var sheets = readSheets();
+        var rec = sheets.find(function (x) { return x.id === sh.id; });
+        if (rec) {
+          rec.name = name;
+          if (!writeSheets(sheets)) {
+            sheetError.textContent = 'Could not rename the sheet. This browser is blocking storage.';
+            sheetError.hidden = false;
+          } else if (currentSheet && currentSheet.id === sh.id) {
+            currentSheet.name = name;
+            sheetNameEl.textContent = name;
+          }
+        }
+      }
+      renderSheets();
+    }
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      else if (e.key === 'Escape') { e.stopPropagation(); finish(false); }
+    });
+    input.addEventListener('blur', function () { finish(true); });
+  }
+
+  function renderSheets() {
+    sheetList.textContent = '';
+    if (!currentUser) return;
+    var sheets = readSheets().sort(function (a, b) { return b.savedAt - a.savedAt; });
+    sheetEmpty.hidden = sheets.length > 0;
+    var myTeamList = teamsOfMe();
+    sheets.forEach(function (sh) {
+      var li = document.createElement('li');
+      li.className = 'sheet-row';
+      var info = document.createElement('div');
+      info.className = 'sheet-info';
+      var title = document.createElement('strong');
+      title.textContent = sh.name;
+      var meta = document.createElement('span');
+      var count = (sh.data && sh.data.boxes ? sh.data.boxes.length : 0);
+      var when = new Date(sh.savedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      meta.textContent = count + (count === 1 ? ' box' : ' boxes') + ' · saved ' + when +
+        (currentSheet && currentSheet.id === sh.id ? ' · open now' : '') + sharedLabel(sh, myTeamList);
+      info.appendChild(title);
+      info.appendChild(meta);
+      var actions = document.createElement('div');
+      actions.className = 'sheet-actions';
+      var open = document.createElement('button');
+      open.type = 'button';
+      open.textContent = 'Open';
+      open.addEventListener('click', function () { openSheet(sh.id); });
+      var ren = document.createElement('button');
+      ren.type = 'button';
+      ren.textContent = 'Rename';
+      ren.addEventListener('click', function () { startRename(sh, title, info, ren); });
+      var del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'danger';
+      del.textContent = 'Delete';
+      var armed = false, timer = null;
+      del.addEventListener('click', function () {
+        if (!armed) {
+          armed = true;
+          del.textContent = 'Confirm delete';
+          timer = setTimeout(function () { armed = false; del.textContent = 'Delete'; }, 3000);
+          return;
+        }
+        clearTimeout(timer);
+        deleteSheet(sh.id);
+      });
+      actions.appendChild(open);
+      actions.appendChild(ren);
+      actions.appendChild(del);
+      li.appendChild(info);
+      li.appendChild(actions);
+
+      // Share control: pick one of your teams, or none.
+      var share = document.createElement('div');
+      share.className = 'sheet-share';
+      var sel = document.createElement('select');
+      sel.id = 'share-' + sh.id;
+      var lab = document.createElement('label');
+      lab.htmlFor = sel.id;
+      lab.textContent = 'Share with';
+      var none = document.createElement('option');
+      none.value = '';
+      none.textContent = myTeamList.length ? 'Not shared' : 'Create a team first';
+      sel.appendChild(none);
+      myTeamList.forEach(function (t) {
+        var o = document.createElement('option');
+        o.value = t.id;
+        o.textContent = t.name;
+        sel.appendChild(o);
+      });
+      sel.value = myTeamList.some(function (t) { return t.id === sh.teamId; }) ? sh.teamId : '';
+      sel.disabled = myTeamList.length === 0;
+      sel.addEventListener('change', function () { setSheetTeam(sh.id, sel.value); });
+      share.appendChild(lab);
+      share.appendChild(sel);
+      li.appendChild(share);
+
+      sheetList.appendChild(li);
+    });
+    renderShared();
+  }
+
+  // Sharing: a sheet carries a teamId; every member of that team can open and edit it.
+  var sharedList = document.getElementById('shared-list');
+  var sharedTitle = document.getElementById('shared-title');
+
+  function teamsOfMe() {
+    var me = currentUser.toLowerCase();
+    return readTeams().filter(function (t) {
+      return t.members.some(function (m) { return m.key === me; });
+    });
+  }
+  function sharedLabel(sh, teams) {
+    var t = teams.find(function (x) { return x.id === sh.teamId; });
+    return t ? ' · shared with ' + t.name : '';
+  }
+  function setSheetTeam(id, teamId) {
+    var sheets = readSheets();
+    var rec = sheets.find(function (x) { return x.id === id; });
+    if (!rec) return;
+    rec.teamId = teamId || null;
+    if (!writeSheets(sheets)) {
+      sheetError.textContent = 'Could not change sharing. This browser is blocking storage.';
+      sheetError.hidden = false;
+    }
+    renderSheets();
+  }
+  function sharedWithMe() {
+    var me = currentUser.toLowerCase();
+    var out = [];
+    teamsOfMe().forEach(function (t) {
+      t.members.forEach(function (m) {
+        if (m.key === me) return;
+        readSheets(m.key).forEach(function (sh) {
+          if (sh.teamId === t.id) out.push({ sheet: sh, ownerKey: m.key, ownerName: m.name, team: t });
+        });
+      });
+    });
+    return out.sort(function (a, b) { return b.sheet.savedAt - a.sheet.savedAt; });
+  }
+  function renderShared() {
+    sharedList.textContent = '';
+    var items = currentUser ? sharedWithMe() : [];
+    sharedTitle.hidden = sharedList.hidden = items.length === 0;
+    items.forEach(function (it) {
+      var sh = it.sheet;
+      var li = document.createElement('li');
+      li.className = 'sheet-row';
+      var info = document.createElement('div');
+      info.className = 'sheet-info';
+      var title = document.createElement('strong');
+      title.textContent = sh.name;
+      var meta = document.createElement('span');
+      var count = (sh.data && sh.data.boxes ? sh.data.boxes.length : 0);
+      var when = new Date(sh.savedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      meta.textContent = 'by ' + it.ownerName + ' · ' + it.team.name + ' · ' + count +
+        (count === 1 ? ' box' : ' boxes') + ' · saved ' + when +
+        (currentSheet && currentSheet.id === sh.id ? ' · open now' : '');
+      info.appendChild(title);
+      info.appendChild(meta);
+      var actions = document.createElement('div');
+      actions.className = 'sheet-actions';
+      var open = document.createElement('button');
+      open.type = 'button';
+      open.textContent = 'Open';
+      open.addEventListener('click', function () { openSheet(sh.id, it.ownerKey); });
+      actions.appendChild(open);
+      li.appendChild(info);
+      li.appendChild(actions);
+      sharedList.appendChild(li);
+    });
+  }
+
+  // Teams: kept in this browser. A person can only be added if they have an account here.
+  var TEAMS_KEY = 'dotgrid-teams';
+  var teamList = document.getElementById('team-list');
+  var teamEmpty = document.getElementById('team-empty');
+  var teamError = document.getElementById('team-error');
+  var teamNameInput = document.getElementById('team-name');
+
+  function readTeams() {
+    try {
+      var a = JSON.parse(localStorage.getItem(TEAMS_KEY));
+      return Array.isArray(a) ? a : [];
+    } catch (err) { return []; }
+  }
+  function writeTeams(a) {
+    try { localStorage.setItem(TEAMS_KEY, JSON.stringify(a)); return true; } catch (err) { return false; }
+  }
+  function teamMsg(msg) { teamError.textContent = msg; teamError.hidden = !msg; }
+
+  function updateTeam(id, fn) {
+    var teams = readTeams();
+    var t = teams.find(function (x) { return x.id === id; });
+    if (!t) return false;
+    fn(t, teams);
+    return writeTeams(teams);
+  }
+
+  document.getElementById('team-create').addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!currentUser) return;
+    var name = teamNameInput.value.trim();
+    if (!name) { teamMsg('Enter a team name.'); return; }
+    var teams = readTeams();
+    teams.push({
+      id: uid(), name: name, owner: currentUser.toLowerCase(), createdAt: Date.now(),
+      members: [{ key: currentUser.toLowerCase(), name: currentUser }]
+    });
+    if (!writeTeams(teams)) { teamMsg('Could not create the team. This browser is blocking storage.'); return; }
+    teamNameInput.value = '';
+    teamMsg('');
+    renderTeams();
+  });
+
+  function addMember(team, raw, errEl) {
+    var key = raw.trim().toLowerCase();
+    errEl.hidden = false;
+    if (!key) { errEl.textContent = 'Type a username to add.'; return; }
+    var acct = readAccounts()[key];
+    if (!acct) { errEl.textContent = 'No account named "' + raw.trim() + '" in this browser. They need to create one first.'; return; }
+    if (team.members.some(function (m) { return m.key === key; })) { errEl.textContent = acct.name + ' is already on this team.'; return; }
+    updateTeam(team.id, function (t) { t.members.push({ key: key, name: acct.name }); });
+    renderTeams();
+  }
+
+  function renderTeams() {
+    teamList.textContent = '';
+    if (!currentUser) return;
+    var me = currentUser.toLowerCase();
+    var teams = readTeams().filter(function (t) {
+      return t.members.some(function (m) { return m.key === me; });
+    });
+    teamEmpty.hidden = teams.length > 0;
+    teams.forEach(function (t) {
+      var isOwner = t.owner === me;
+      var li = document.createElement('li');
+      li.className = 'team-card';
+
+      var head = document.createElement('div');
+      head.className = 'team-head';
+      var title = document.createElement('strong');
+      title.textContent = t.name;
+      var meta = document.createElement('span');
+      meta.textContent = t.members.length + (t.members.length === 1 ? ' member' : ' members');
+      head.appendChild(title);
+      head.appendChild(meta);
+      li.appendChild(head);
+
+      var members = document.createElement('ul');
+      members.className = 'member-list';
+      t.members.forEach(function (m) {
+        var mi = document.createElement('li');
+        mi.appendChild(document.createTextNode(m.name));
+        if (m.key === t.owner) {
+          var role = document.createElement('span');
+          role.className = 'role';
+          role.textContent = 'owner';
+          mi.appendChild(role);
+        } else if (isOwner) {
+          var rm = document.createElement('button');
+          rm.type = 'button';
+          rm.textContent = '×';
+          rm.setAttribute('aria-label', 'Remove ' + m.name);
+          rm.addEventListener('click', function () {
+            updateTeam(t.id, function (tt) { tt.members = tt.members.filter(function (x) { return x.key !== m.key; }); });
+            renderTeams();
+          });
+          mi.appendChild(rm);
+        }
+        members.appendChild(mi);
+      });
+      li.appendChild(members);
+
+      if (isOwner) {
+        var form = document.createElement('form');
+        form.className = 'team-add';
+        form.noValidate = true;
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.id = 'add-' + t.id;
+        input.placeholder = 'Add by username';
+        input.setAttribute('aria-label', 'Add a member to ' + t.name + ' by username');
+        input.autocomplete = 'off';
+        input.autocapitalize = 'none';
+        input.spellcheck = false;
+        var add = document.createElement('button');
+        add.type = 'submit';
+        add.className = 'small';
+        add.textContent = 'Add';
+        form.appendChild(input);
+        form.appendChild(add);
+        var err = document.createElement('p');
+        err.className = 'error';
+        err.setAttribute('role', 'alert');
+        err.hidden = true;
+        form.addEventListener('submit', function (e) {
+          e.preventDefault();
+          addMember(t, input.value, err);
+        });
+        li.appendChild(form);
+        li.appendChild(err);
+      }
+
+      var actions = document.createElement('div');
+      actions.className = 'team-actions';
+      var danger = document.createElement('button');
+      danger.type = 'button';
+      danger.className = 'small danger';
+      var idle = isOwner ? 'Delete team' : 'Leave team';
+      danger.textContent = idle;
+      var armed = false, timer = null;
+      danger.addEventListener('click', function () {
+        if (!armed) {
+          armed = true;
+          danger.textContent = 'Confirm';
+          timer = setTimeout(function () { armed = false; danger.textContent = idle; }, 3000);
+          return;
+        }
+        clearTimeout(timer);
+        if (isOwner) {
+          var rest = readTeams().filter(function (x) { return x.id !== t.id; });
+          writeTeams(rest);
+        } else {
+          updateTeam(t.id, function (tt) { tt.members = tt.members.filter(function (x) { return x.key !== me; }); });
+        }
+        renderTeams();
+      });
+      actions.appendChild(danger);
+      li.appendChild(actions);
+      teamList.appendChild(li);
+    });
+    // Team changes affect who sheets can be shared with and what is shared with you.
+    renderSheets();
+  }
+
+  document.getElementById('new-sheet').addEventListener('click', newSheet);
+  saveBtn.addEventListener('click', saveSheet);
+  if (location.hash === '#account' && currentUser) showAccount();
+
+  // Light / dark switch. With no saved choice the page follows the system setting.
+  var modeBtns = document.querySelectorAll('.theme button');
+  function activeMode() {
+    return document.documentElement.getAttribute('data-theme') || (mq.matches ? 'dark' : 'light');
+  }
+  function syncModeButtons() {
+    var m = activeMode();
+    Array.prototype.forEach.call(modeBtns, function (b) {
+      b.setAttribute('aria-pressed', String(b.getAttribute('data-mode') === m));
+    });
+  }
+  Array.prototype.forEach.call(modeBtns, function (b) {
+    b.addEventListener('click', function () {
+      var m = b.getAttribute('data-mode');
+      document.documentElement.setAttribute('data-theme', m);
+      try { localStorage.setItem('dotgrid-mode', m); } catch (err) {}
+      syncModeButtons();
+      request();
+    });
+  });
+  try {
+    var saved = localStorage.getItem('dotgrid-mode');
+    if (saved === 'light' || saved === 'dark') document.documentElement.setAttribute('data-theme', saved);
+  } catch (err) {}
+  if (mq.addEventListener) mq.addEventListener('change', syncModeButtons);
+  syncModeButtons();
+
+  resize();
+})();
+</script>
+
+</html>
